@@ -21,14 +21,16 @@ import (
 	"time"
 
 	"github.com/hidal-go/hidalgo/legacy/nosql"
+	"google.golang.org/protobuf/proto"
+
+	"github.com/cayleygraph/quad"
+	"github.com/cayleygraph/quad/pquads"
 
 	"github.com/cayleygraph/cayley/clog"
 	"github.com/cayleygraph/cayley/graph"
 	"github.com/cayleygraph/cayley/graph/iterator"
 	"github.com/cayleygraph/cayley/graph/refs"
 	"github.com/cayleygraph/cayley/internal/lru"
-	"github.com/cayleygraph/quad"
-	"github.com/cayleygraph/quad/pquads"
 )
 
 const DefaultDBName = "cayley"
@@ -46,10 +48,10 @@ func init() {
 	for _, reg := range nosql.List() {
 		Register(reg.Name, Registration{
 			NewFunc: func(addr string, options graph.Options) (nosql.Database, error) {
-				return reg.Open(addr, DefaultDBName, nosql.Options(options))
+				return reg.Open(context.TODO(), addr, DefaultDBName, nosql.Options(options))
 			},
 			InitFunc: func(addr string, options graph.Options) (nosql.Database, error) {
-				return reg.New(addr, DefaultDBName, nosql.Options(options))
+				return reg.New(context.TODO(), addr, DefaultDBName, nosql.Options(options))
 			},
 			IsPersistent: !reg.Volatile, Traits: reg.Traits,
 		})
@@ -310,7 +312,7 @@ func (qs *QuadStore) appendLog(ctx context.Context, deltas []graph.Delta) ([]nos
 	w := qs.batchInsert(colLog)
 	defer w.Close()
 	for _, d := range deltas {
-		data, err := pquads.MakeQuad(d.Quad).Marshal()
+		data, err := proto.Marshal(pquads.MakeQuad(d.Quad))
 		if err != nil {
 			return w.Keys(), err
 		}
@@ -466,7 +468,7 @@ func toDocumentValue(opt *Traits, v quad.Value) nosql.Document {
 	var doc nosql.Document
 	encPb := func() {
 		qv := pquads.MakeValue(v)
-		data, err := qv.Marshal()
+		data, err := proto.Marshal(qv)
 		if err != nil {
 			panic(err)
 		}
@@ -538,7 +540,7 @@ func toQuadValue(opt *Traits, d nosql.Document) (quad.Value, error) {
 			return nil, err
 		}
 		var p pquads.Value
-		if err := p.Unmarshal(b); err != nil {
+		if err := proto.Unmarshal(b, &p); err != nil {
 			return nil, fmt.Errorf("couldn't decode value: %v", err)
 		}
 		return p.ToNative(), nil
@@ -686,7 +688,9 @@ func (qs *QuadStore) NameOf(v graph.Ref) (quad.Value, error) {
 		return val.(quad.Value), nil
 	}
 	nd, err := qs.db.FindByKey(context.TODO(), colNodes, hash.key())
-	if err != nil {
+	if err == nosql.ErrNotFound {
+		return nil, nil
+	} else if err != nil {
 		clog.Errorf("couldn't retrieve node %v: %v", v, err)
 		return nil, err
 	}
